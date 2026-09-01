@@ -1,0 +1,20 @@
+{
+  "seed": 42,
+  "images_dir": "data/synthetic/images/train",
+  "labels_dir": "data/synthetic/labels/train",
+  "val_images_dir": "data/synthetic/images/val",
+  "val_labels_dir": "data/synthetic/labels/val",
+  "model_config": "config/model.json",
+  "epochs": 120,
+  "batch_size": 16,
+  "learning_rate": 0.01,
+  "weight_decay": 0.0005,
+  "momentum": 0.937,
+  "warmup_epochs": 3,
+  "num_workers": 2,
+  "checkpoint_dir": "checkpoints/synthetic",
+  "resume": "",
+  "amp": true,
+  "save_every": 5,
+  "augmentation": true
+}

@@ -1,0 +1,21 @@
+{
+  "seed": 42,
+  "images_dir": "data/real/images/train",
+  "labels_dir": "data/real/labels/train",
+  "val_images_dir": "data/real/images/val",
+  "val_labels_dir": "data/real/labels/val",
+  "model_config": "config/model.json",
+  "pretrained_checkpoint": "checkpoints/synthetic/best.pt",
+  "epochs": 80,
+  "batch_size": 8,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0005,
+  "momentum": 0.937,
+  "warmup_epochs": 2,
+  "num_workers": 2,
+  "checkpoint_dir": "checkpoints/real_finetune",
+  "min_real_train_images": 200,
+  "amp": true,
+  "save_every": 5,
+  "augmentation": true
+}
