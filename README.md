@@ -61,10 +61,26 @@ Sabaic-OCR-YOLO/
 8. Inference pipeline ثم APK.
 9. Report + PPT + final package.
 
+## حالة التنفيذ الحالية
+
+مرحلة البيانات الاصطناعية اجتازت بوابة المراجعة وأصبح المشروع جاهزًا لمرحلة **Synthetic pretraining على GPU**.
+
+الـbaseline الذي تمت مراجعته فعليًا:
+
+- Train: **5,000 صورة / 65,513 Bounding Boxes**.
+- Validation: **500 صورة / 6,580 Bounding Boxes**.
+- Synthetic Test: **100 صورة / 1,289 Bounding Boxes**.
+- جميع الـ30 Class موجودة في كل split.
+- أخطاء Labels/صور تالفة/Labels فارغة/Transcripts ناقصة: **0**.
+- Exact duplicate leakage بين الـsplits: **0**.
+- Anchor mean best IoU: **0.8750**، وanchor recall@0.50: **1.0000**.
+- Unit tests الحالية: **9 passed**.
+- اختبار overfit صغير للموديل/الـloss نجح، لكنه **ليس نتيجة دقة للنموذج**.
+
+التفاصيل الموثقة في `docs/05_synthetic_training_gate.md`. التدريب الكامل يحتاج Colab GPU، وبعد تشغيله فقط يتم اعتماد `best.pt` و`last.pt` ونتائج التقييم الفعلية.
+
 ## مهم
 
 ملف الخط `NotoSansOldSouthArabian-Regular.ttf` لا يتم تضمينه تلقائيًا. يوضع محليًا في `assets/fonts/` عند مرحلة توليد البيانات، مع الالتزام بترخيص الخط.
 
-## حالة المشروع
-
-قيد البناء مرحلةً بمرحلة. لا توجد نتائج دقة معلنة حتى يتم إجراء تدريب واختبار فعليين.
+لا توجد دقة نهائية معلنة حتى يتم إجراء التدريب والاختبار الفعليين.
