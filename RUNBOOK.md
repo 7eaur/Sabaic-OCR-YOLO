@@ -6,7 +6,7 @@
 
 ```bash
 pip install -r requirements.txt
-pip install -e . --no-deps
+pip install -e . --no-deps --no-build-isolation
 python scripts/check_environment.py
 pytest -q
 ```
@@ -27,30 +27,40 @@ python scripts/validate_font.py
 
 ## 2) Synthetic generation
 
-تجربة صغيرة:
+تجربة صغيرة للفحص فقط:
 
 ```bash
-python scripts/generate_synthetic.py --train 500 --val 100 --test 50
+python scripts/generate_synthetic.py --train 500 --val 100 --test 50 --overwrite
 ```
 
-المجموعة المقترحة للتدريب الكامل على Colab/GPU:
+المجموعة المعتمدة للـbaseline الحالي:
 
 ```bash
-python scripts/generate_synthetic.py --train 10000 --val 1500 --test 500
+python scripts/generate_synthetic.py --train 5000 --val 500 --test 100 --overwrite
 ```
 
-ثم:
+إذا انقطع التوليد، لا تعِد الكتابة فوق البيانات الموجودة؛ استخدم:
+
+```bash
+python scripts/generate_synthetic.py --train 5000 --val 500 --test 100 --resume
+```
+
+ثم نفّذ بوابة المراجعة الكاملة:
+
+```bash
+python scripts/review_synthetic_stage.py \
+  --require-train 5000 \
+  --require-val 500 \
+  --require-test 100
+```
+
+وعند الحاجة لمعاينة الصناديق بصريًا:
 
 ```bash
 python scripts/validate_labels.py \
   --images data/synthetic/images/train \
   --labels data/synthetic/labels/train \
   --preview-dir outputs/synthetic_previews
-
-python scripts/audit_synthetic.py \
-  --images data/synthetic/images/train \
-  --labels data/synthetic/labels/train \
-  --output outputs/synthetic_audit.json
 ```
 
 ## 3) Anchors
@@ -61,9 +71,27 @@ python scripts/fit_anchors.py \
   --labels data/synthetic/labels/train
 ```
 
-القيم الحالية في `config/model.json` حُسبت من دفعة مراجعة فعلية تحتوي 30,234 Bounding Boxes. عند تغيير طريقة التوليد بشكل كبير يعاد حسابها.
+القيم الحالية في `config/model.json` حُسبت من مجموعة Train المراجعة كاملة: **5,000 صورة و65,513 Bounding Boxes**.
 
-## 4) Synthetic pretraining
+```text
+Scale 1: [20,38] [26,39] [29,50]
+Scale 2: [35,50] [40,59] [37,73]
+Scale 3: [48,68] [51,80] [61,81]
+```
+
+جودة التغطية المقاسة: mean best IoU = 0.8750، recall@0.50 = 1.0000، recall@0.70 = 0.9878. عند تغيير هندسة التوليد بشكل كبير يجب حساب الـanchors من جديد.
+
+## 4) Training preflight ثم Synthetic pretraining
+
+قبل التدريب الطويل:
+
+```bash
+python scripts/sanity_overfit.py
+```
+
+هذا اختبار plumbing فقط وليس نتيجة دقة.
+
+ثم على Google Colab مع GPU:
 
 ```bash
 python scripts/train_synthetic.py
@@ -78,7 +106,7 @@ checkpoints/synthetic/last.pt
 
 يمكن Resume عبر وضع مسار `last.pt` في `config/train_synthetic.json -> resume`.
 
-> لا تعتبر smoke tests الموجودة في وثائق المراجعة نتائج دقة نهائية. النتائج النهائية لا تسجل إلا بعد التدريب الكامل.
+> لا تعتبر smoke/preflight tests نتائج دقة نهائية. النتائج النهائية لا تسجل إلا بعد التدريب الكامل والتقييم الفعلي.
 
 ## 5) Real data
 
@@ -93,9 +121,11 @@ data/real/labels/train     label per image
 
 مع Validation/Test حقيقيين منفصلين، ويفضل إبقاء كل crops العائدة لنفس النقش في split واحد لمنع Data Leakage.
 
-تحقق قبل التدريب:
+تحقق قبل التدريب، بما في ذلك منع تسرّب الصور بين الـsplits ووجود Ground Truth للاختبار:
 
 ```bash
+python scripts/audit_real_dataset.py --min-train 200 --min-val 20 --min-test 20
+
 python scripts/validate_labels.py \
   --images data/real/images/train \
   --labels data/real/labels/train \
@@ -111,7 +141,7 @@ python scripts/finetune_real.py
 السكربت يرفض التشغيل إذا:
 
 - صور Real Train أقل من 200.
-- Labels ناقصة/فاسدة.
+- Labels ناقصة/فاسدة أو صور تالفة/Labels فارغة.
 - Synthetic pretrained checkpoint غير موجود.
 
 ## 7) Final evaluation
