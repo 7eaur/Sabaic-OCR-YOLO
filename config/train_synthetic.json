@@ -5,7 +5,7 @@
   "val_images_dir": "data/synthetic/images/val",
   "val_labels_dir": "data/synthetic/labels/val",
   "model_config": "config/model.json",
-  "epochs": 120,
+  "epochs": 100,
   "batch_size": 16,
   "learning_rate": 0.01,
   "weight_decay": 0.0005,
@@ -16,5 +16,7 @@
   "resume": "",
   "amp": true,
   "save_every": 5,
-  "augmentation": true
+  "augmentation": true,
+  "min_train_images": 5000,
+  "min_val_images": 500
 }
