@@ -8,7 +8,7 @@
 pip install -r requirements.txt
 pip install -e . --no-deps
 python scripts/check_environment.py
-python -m unittest discover -s tests -v
+pytest -q
 ```
 
 ## 1) Font
@@ -19,18 +19,24 @@ python -m unittest discover -s tests -v
 assets/fonts/NotoSansOldSouthArabian-Regular.ttf
 ```
 
+ثم افحص دعم جميع الـclasses:
+
+```bash
+python scripts/validate_font.py
+```
+
 ## 2) Synthetic generation
 
 تجربة صغيرة:
 
 ```bash
-python scripts/generate_synthetic.py --train 500 --val 100
+python scripts/generate_synthetic.py --train 500 --val 100 --test 50
 ```
 
-المجموعة الكاملة المقترحة كبداية:
+المجموعة المقترحة للتدريب الكامل على Colab/GPU:
 
 ```bash
-python scripts/generate_synthetic.py --train 10000 --val 1500
+python scripts/generate_synthetic.py --train 10000 --val 1500 --test 500
 ```
 
 ثم:
@@ -40,9 +46,14 @@ python scripts/validate_labels.py \
   --images data/synthetic/images/train \
   --labels data/synthetic/labels/train \
   --preview-dir outputs/synthetic_previews
+
+python scripts/audit_synthetic.py \
+  --images data/synthetic/images/train \
+  --labels data/synthetic/labels/train \
+  --output outputs/synthetic_audit.json
 ```
 
-## 3) Fit anchors
+## 3) Anchors
 
 ```bash
 python scripts/fit_anchors.py \
@@ -50,7 +61,7 @@ python scripts/fit_anchors.py \
   --labels data/synthetic/labels/train
 ```
 
-راجع القيم الناتجة ثم ضعها في `config/model.json`.
+القيم الحالية في `config/model.json` حُسبت من دفعة مراجعة فعلية تحتوي 30,234 Bounding Boxes. عند تغيير طريقة التوليد بشكل كبير يعاد حسابها.
 
 ## 4) Synthetic pretraining
 
@@ -67,6 +78,8 @@ checkpoints/synthetic/last.pt
 
 يمكن Resume عبر وضع مسار `last.pt` في `config/train_synthetic.json -> resume`.
 
+> لا تعتبر smoke tests الموجودة في وثائق المراجعة نتائج دقة نهائية. النتائج النهائية لا تسجل إلا بعد التدريب الكامل.
+
 ## 5) Real data
 
 المطلوب للـfine-tuning:
@@ -76,7 +89,9 @@ data/real/images/train     >= 200 real images
 data/real/labels/train     label per image
 ```
 
-مع Validation/Test حقيقيين منفصلين.
+هذه الـ200+ صورة يجب أن تكون **حقيقية وليست Synthetic**، وكل حرف ظاهر مستخدم في التدريب يأخذ Bounding Box وClass ID صحيحًا. الصورة الواحدة يمكن أن تحتوي عددًا قليلًا من الحروف.
+
+مع Validation/Test حقيقيين منفصلين، ويفضل إبقاء كل crops العائدة لنفس النقش في split واحد لمنع Data Leakage.
 
 تحقق قبل التدريب:
 
@@ -106,7 +121,13 @@ python scripts/evaluate.py \
   --checkpoint checkpoints/real_finetune/best.pt
 ```
 
-يحفظ Detection + Character OCR + Word OCR metrics في:
+يحفظ:
+
+- Precision / Recall / mAP50 / mAP50:95.
+- Correct/Wrong characters + CER + Character match accuracy.
+- Correct/Wrong words + WER + Word match accuracy.
+
+في:
 
 ```text
 outputs/evaluation/test_metrics.json
@@ -120,4 +141,4 @@ python scripts/infer.py \
   --image path/to/new_image.jpg
 ```
 
-المخرجات: صورة Bounding Boxes + JSON + النص السبئي Unicode.
+المخرجات: صورة Bounding Boxes + Class IDs + Confidence + JSON + النص السبئي Unicode.
