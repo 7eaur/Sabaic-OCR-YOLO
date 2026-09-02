@@ -67,6 +67,53 @@ def cosine_lambda(epoch: int, total_epochs: int, warmup_epochs: int) -> float:
     return 0.05 + 0.95 * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+def compute_class_weights(labels_dir: str | Path, num_classes: int) -> list[float]:
+    """Inverse-sqrt frequency weights, normalized to mean 1 and softly clipped.
+
+    This is intentionally milder than pure inverse-frequency weighting: the
+    separator is naturally more common than an individual letter, but it should
+    not dominate the classification objective as it did in the first baseline.
+    """
+    counts = np.zeros(int(num_classes), dtype=np.int64)
+    for path in Path(labels_dir).glob("*.txt"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            cls_id = int(line.split()[0])
+            if 0 <= cls_id < num_classes:
+                counts[cls_id] += 1
+    if (counts == 0).any():
+        missing = np.where(counts == 0)[0].tolist()
+        raise RuntimeError(f"Cannot class-balance training: classes with zero labels: {missing}")
+    weights = 1.0 / np.sqrt(counts.astype(np.float64))
+    weights /= weights.mean()
+    weights = np.clip(weights, 0.5, 2.5)
+    weights /= weights.mean()
+    print("class_counts:", counts.tolist())
+    print("class_weights:", [round(float(x), 4) for x in weights.tolist()])
+    return [float(x) for x in weights.tolist()]
+
+
+def reset_classification_logits(model: SabaicYOLO) -> None:
+    """Reinitialize only class-output channels while preserving box/objectness.
+
+    Useful for corrective synthetic training after a checkpoint has learned good
+    localization but a collapsed classifier. The detector architecture remains
+    unchanged and no external weights are introduced.
+    """
+    num_classes = model.num_classes
+    with torch.no_grad():
+        for head in (model.head_s8, model.head_s16, model.head_s32):
+            for anchor_idx in range(model.num_anchors):
+                base = anchor_idx * (5 + num_classes)
+                start = base + 5
+                end = start + num_classes
+                torch.nn.init.normal_(head.weight[start:end], mean=0.0, std=0.01)
+                if head.bias is not None:
+                    head.bias[start:end].zero_()
+
+
 def _run_epoch(
     model,
     loader,
@@ -144,10 +191,22 @@ def train_detector(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(model_cfg).to(device)
 
+    class_weights = None
+    if bool(train_cfg.get("class_balance", False)):
+        class_weights = compute_class_weights(
+            train_cfg["labels_dir"], int(model_cfg["num_classes"])
+        )
+
     criterion = YoloLoss(
         anchors=model_cfg["anchors"],
         num_classes=model_cfg["num_classes"],
         image_size=model_cfg["image_size"],
+        box_weight=float(train_cfg.get("box_weight", 5.0)),
+        obj_weight=float(train_cfg.get("obj_weight", 1.0)),
+        cls_weight=float(train_cfg.get("cls_weight", 1.0)),
+        noobj_weight=float(train_cfg.get("noobj_weight", 0.25)),
+        cls_label_smoothing=float(train_cfg.get("cls_label_smoothing", 0.02)),
+        class_weights=class_weights,
     ).to(device)
 
     optimizer = torch.optim.SGD(
@@ -199,6 +258,9 @@ def train_detector(
         ckpt_classes = payload.get("model_config", {}).get("num_classes")
         if ckpt_classes is not None and int(ckpt_classes) != int(model_cfg["num_classes"]):
             raise RuntimeError("Checkpoint num_classes does not match current model config.")
+        if bool(train_cfg.get("reset_classification_head", False)):
+            reset_classification_logits(model)
+            print("classification logits reset; box/objectness channels preserved")
 
     amp_enabled = bool(train_cfg.get("amp", True) and device.type == "cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled) if device.type == "cuda" else None
@@ -230,11 +292,10 @@ def train_detector(
         print(
             f"epoch {epoch+1}/{epochs} "
             f"train={train_stats['loss']:.4f} val={val_stats['loss']:.4f} "
-            f"lr={row['lr']:.6g}"
+            f"box={val_stats['box_loss']:.4f} obj={val_stats['obj_loss']:.4f} "
+            f"cls={val_stats['cls_loss']:.4f} lr={row['lr']:.6g}"
         )
 
-        # Advance schedule before checkpointing so last.pt resumes with the LR
-        # intended for the next epoch rather than replaying the previous state.
         scheduler.step()
 
         if val_stats["loss"] < best_val:
@@ -247,11 +308,9 @@ def train_detector(
                 epoch,
                 best_val,
                 model_cfg,
-                extra={"history": history},
+                extra={"history": history, "train_config": train_cfg},
             )
 
-        # Save last after best_val is updated so resume never restores a stale
-        # best metric.
         save_checkpoint(
             checkpoint_dir / "last.pt",
             model,
@@ -260,7 +319,7 @@ def train_detector(
             epoch,
             best_val,
             model_cfg,
-            extra={"history": history},
+            extra={"history": history, "train_config": train_cfg},
         )
 
         if (epoch + 1) % save_every == 0:
@@ -272,7 +331,7 @@ def train_detector(
                 epoch,
                 best_val,
                 model_cfg,
-                extra={"history": history},
+                extra={"history": history, "train_config": train_cfg},
             )
 
     return {
