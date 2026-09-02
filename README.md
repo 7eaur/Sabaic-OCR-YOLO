@@ -18,14 +18,14 @@
 - نحتفظ بصور Real Validation وReal Test منفصلة عن صور الـ200+ المستخدمة في Fine-tuning.
 - كل حرف ظاهر في الصورة الحقيقية المستخدمة للتدريب يجب أن يملك Bounding Box وClass ID صحيحًا.
 - جميع مراحل التدريب والاستدلال Python ومتوافقة مع Google Colab وGPU وcheckpoint/resume.
-- لا يتم اختلاق نتائج أو دقة؛ ملفات النتائج لا تُملأ إلا من تشغيل فعلي.
+- لا يتم اختلاق نتائج أو دقة؛ النتائج المعلنة في المستودع مأخوذة من تشغيل فعلي.
 
 ## نطاق النسخة الأولى
 
 - 29 حرف Old South Arabian.
-- الرمز U+10A7D ضمن الـclasses لأنه يُستخدم في المادة النصية كعلامة فصل/رقم واحد حسب السياق، ويساعد في بناء الكلمات.
-- إجمالي classes في v1: **30**.
-- U+10A7E وU+10A7F خارج نطاق v1، ويمكن إضافتهما لاحقًا إذا ظهرا بشكل كافٍ في البيانات الحقيقية.
+- الرمز U+10A7D ضمن الـclasses في النطاق الحالي.
+- إجمالي classes: **30**.
+- اتجاه إعادة البناء الأساسي في v1 هو RTL.
 
 ## المكونات
 
@@ -33,13 +33,13 @@
 Sabaic-OCR-YOLO/
 ├── config/               # classes/model/train configuration
 ├── data/                 # local datasets (not committed by default)
-├── docs/                 # architecture, labeling, experiment protocol
+├── docs/                 # architecture, labeling, experiment protocol/results
 ├── sabaic_ocr/
 │   ├── data/             # dataset + augmentation + synthetic generation
 │   ├── model/            # custom YOLO architecture/loss/decode/NMS
 │   ├── ocr/              # reading order + Unicode reconstruction
 │   └── metrics/          # detection/OCR metrics
-├── scripts/              # train, finetune, infer, validate labels
+├── scripts/              # train, diagnose, evaluate, threshold sweep, finetune
 ├── notebooks/            # Google Colab entry points
 ├── tests/                # unit/integration tests
 ├── checkpoints/          # generated locally / Drive
@@ -54,33 +54,86 @@ Sabaic-OCR-YOLO/
 1. تثبيت نطاق الحروف والـUnicode والـarchitecture وسياسة الـlabeling.
 2. بناء مولد Synthetic Data داخلي مع YOLO labels.
 3. تدريب YOLO من الصفر على Synthetic Data وحفظ `best.pt` و`last.pt`.
-4. جمع ووسم **200+ صورة حقيقية للتدريب** + validation/test حقيقية مستقلة.
-5. Fine-tuning من synthetic checkpoint على Real Train فقط.
-6. OCR post-processing: ترتيب الأسطر والحروف وتحويل Class IDs إلى Unicode.
-7. Evaluation: Precision, Recall, mAP, Character Accuracy/CER, Word Accuracy/WER.
-8. Inference pipeline ثم APK.
-9. Report + PPT + final package.
+4. تشخيص نتيجة v1 وإصلاح مشكلة تصنيف الحروف في Synthetic v2.
+5. ضبط confidence التشغيلي للـOCR على Synthetic Test.
+6. جمع ووسم **200+ صورة حقيقية للتدريب** + validation/test حقيقية مستقلة.
+7. Fine-tuning من synthetic v2 checkpoint على Real Train فقط.
+8. OCR post-processing: ترتيب الأسطر والحروف وتحويل Class IDs إلى Unicode.
+9. Evaluation: Precision, Recall, mAP, Character Accuracy/CER, Word Accuracy/WER.
+10. Inference pipeline ثم APK.
+11. Report + PPT + final package.
 
 ## حالة التنفيذ الحالية
 
-مرحلة البيانات الاصطناعية اجتازت بوابة المراجعة وأصبح المشروع جاهزًا لمرحلة **Synthetic pretraining على GPU**.
+مرحلة **Synthetic pretraining v2** اكتملت وتم تقييمها فعليًا على Synthetic Test مستقل من 100 صورة.
 
-الـbaseline الذي تمت مراجعته فعليًا:
+### البيانات الاصطناعية
 
-- Train: **5,000 صورة / 65,513 Bounding Boxes**.
-- Validation: **500 صورة / 6,580 Bounding Boxes**.
-- Synthetic Test: **100 صورة / 1,289 Bounding Boxes**.
-- جميع الـ30 Class موجودة في كل split.
-- أخطاء Labels/صور تالفة/Labels فارغة/Transcripts ناقصة: **0**.
-- Exact duplicate leakage بين الـsplits: **0**.
-- Anchor mean best IoU: **0.8750**، وanchor recall@0.50: **1.0000**.
-- Unit tests الحالية: **9 passed**.
-- اختبار overfit صغير للموديل/الـloss نجح، لكنه **ليس نتيجة دقة للنموذج**.
+- Train: **5,000 صورة**.
+- Validation: **500 صورة**.
+- Test: **100 صورة / 1,289 حرفًا مرجعيًا**.
+- جميع الـ30 class ممثلة، وتم اجتياز بوابة مراجعة الصور/labels/transcripts وعدم تسرب exact duplicates بين الـsplits.
+- anchors محسوبة من البيانات، Mean Best IoU حوالي **0.87** وAnchor Recall@0.50 حوالي **1.0**.
 
-التفاصيل الموثقة في `docs/05_synthetic_training_gate.md`. التدريب الكامل يحتاج Colab GPU، وبعد تشغيله فقط يتم اعتماد `best.pt` و`last.pt` ونتائج التقييم الفعلية.
+### Synthetic v1
+
+تم تدريب baseline أول لمدة 100 Epoch. التقييم كشف أن localization كان أفضل بكثير من classification؛ Character match accuracy كانت حوالي **20.56%** وCER حوالي **148.18%**، لذلك لم ننتقل إلى Fine-tuning الحقيقي مباشرة.
+
+### Synthetic v2
+
+بناءً على التشخيص تم:
+
+- استبدال BCE classification بـCategorical Cross Entropy.
+- إضافة class balancing.
+- إعادة تهيئة classification logits فقط مع الحفاظ على box/objectness من v1.
+- توحيد decode مع Softmax.
+- اعتماد class-agnostic NMS لتقليل الاكتشافات المكررة.
+- فصل confidence الخاص بحساب mAP عن confidence التشغيلي للـOCR.
+- إضافة تدريب Resume-Safe يحفظ `last.pt` بعد كل Epoch على Google Drive.
+
+اكتمل v2 لمدة **30/30 Epoch**. على Synthetic Test:
+
+| Metric | النتيجة |
+|---|---:|
+| mAP50 | **0.9523** |
+| mAP50-95 | **0.8634** |
+| Recall@IoU50 | **0.9635** |
+
+بعد Threshold Sweep، أفضل قيمة مجرّبة للـSynthetic OCR كانت `confidence=0.80`:
+
+| OCR Metric | النتيجة |
+|---|---:|
+| CER | **0.0551** |
+| WER | **0.2685** |
+| Character match accuracy | **≈0.9604** |
+| Insertions | **20** |
+| Deletions | **8** |
+| Substitutions | **43** |
+
+هذه **نتائج Synthetic Test فقط وليست الدقة النهائية على الصور الحقيقية**. سيتم إعادة اختيار threshold على Real Validation بعد Fine-tuning، ثم إجراء التقييم النهائي على Real Test مستقل.
+
+## التوثيق العربي الكامل للمرحلة الحالية
+
+لشرح ما تم أمام الدكتور، بما في ذلك v1، سبب فشله، طريقة التشخيص، لماذا اخترنا كل تعديل في v2، وجداول النتائج والـThreshold Sweep:
+
+**[`docs/07_synthetic_v2_results_ar.md`](docs/07_synthetic_v2_results_ar.md)**
+
+وتوجد وثائق المراحل السابقة في `docs/01` إلى `docs/06`.
+
+## المرحلة التالية
+
+الانتقال إلى **Real Dataset**:
+
+- تجهيز **200+ صورة حقيقية labeled للتدريب** على الأقل.
+- تجهيز Real Validation وReal Test منفصلين.
+- Bounding Box وClass ID صحيح لكل حرف ظاهر.
+- مراجعة جودة الوسوم.
+- Fine-tuning من `checkpoints/synthetic_v2/best.pt`.
+- ضبط confidence/NMS باستخدام Real Validation فقط.
+- تقييم نهائي على Real Test باستخدام mAP/CER/WER.
 
 ## مهم
 
-ملف الخط `NotoSansOldSouthArabian-Regular.ttf` لا يتم تضمينه تلقائيًا. يوضع محليًا في `assets/fonts/` عند مرحلة توليد البيانات، مع الالتزام بترخيص الخط.
+ملف الخط `NotoSansOldSouthArabian-Regular.ttf` لا يتم تضمينه تلقائيًا في المستودع. يتم الاحتفاظ به محليًا/في Drive الخاص أثناء توليد البيانات، مع الالتزام بترخيصه.
 
-لا توجد دقة نهائية معلنة حتى يتم إجراء التدريب والاختبار الفعليين.
+الـcheckpoints الكبيرة وDataset archive ونتائج التشغيل المخزنة في Google Drive لا تُرفع تلقائيًا إلى GitHub.
