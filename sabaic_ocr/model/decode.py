@@ -54,7 +54,7 @@ def decode_predictions(
         bh = torch.exp(p[..., 3].clamp(max=8.0)) * ah / float(image_size)
 
         obj = p[..., 4].sigmoid()
-        cls_probs = p[..., 5:].sigmoid()
+        cls_probs = p[..., 5:].softmax(dim=-1)
         cls_conf, cls_id = cls_probs.max(dim=-1)
         score = obj * cls_conf
 
@@ -75,10 +75,6 @@ def decode_predictions(
     for chunks in decoded_per_image:
         if chunks:
             det = torch.cat(chunks, dim=0)
-            # Pure-PyTorch NMS is intentionally implemented in this project,
-            # but letting tens of thousands of low-confidence candidates reach
-            # it would be unnecessarily quadratic. Keep only the strongest
-            # candidates before class-aware NMS, as production YOLO pipelines do.
             if pre_nms_topk > 0 and det.shape[0] > pre_nms_topk:
                 idx = det[:, 4].topk(pre_nms_topk, largest=True, sorted=False).indices
                 det = det[idx]
@@ -111,9 +107,6 @@ def class_aware_nms(
     iou_threshold: float = 0.45,
     max_detections: int = 300,
 ) -> torch.Tensor:
-    """
-    detections columns: x1,y1,x2,y2,score,class_id.
-    """
     if detections.numel() == 0:
         return detections
 
@@ -130,6 +123,26 @@ def class_aware_nms(
     return out[order[:max_detections]]
 
 
+def class_agnostic_nms(
+    detections: torch.Tensor,
+    iou_threshold: float = 0.45,
+    max_detections: int = 300,
+) -> torch.Tensor:
+    """Suppress duplicate geometry even when competing anchors predict different classes.
+
+    For character OCR one physical glyph can only have one final class. Using
+    class-aware NMS allowed the same glyph location to survive several times as
+    different letters, creating many insertion errors. The highest-scoring class
+    prediction now wins at that location.
+    """
+    if detections.numel() == 0:
+        return detections
+    idx = nms_single_class(detections[:, :4], detections[:, 4], iou_threshold)
+    out = detections[idx]
+    order = out[:, 4].argsort(descending=True)
+    return out[order[:max_detections]]
+
+
 def postprocess_batch(
     predictions: List[torch.Tensor],
     anchors: Sequence[Sequence[Sequence[float]]] | torch.Tensor,
@@ -139,11 +152,13 @@ def postprocess_batch(
     iou_threshold: float = 0.45,
     max_detections: int = 300,
     pre_nms_topk: int = 2000,
+    class_agnostic: bool = True,
 ) -> List[torch.Tensor]:
     decoded = decode_predictions(
         predictions, anchors, num_classes, image_size, conf_threshold, pre_nms_topk
     )
+    nms_fn = class_agnostic_nms if class_agnostic else class_aware_nms
     return [
-        class_aware_nms(d, iou_threshold=iou_threshold, max_detections=max_detections)
+        nms_fn(d, iou_threshold=iou_threshold, max_detections=max_detections)
         for d in decoded
     ]
