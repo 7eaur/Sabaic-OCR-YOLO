@@ -13,9 +13,17 @@ from sabaic_ocr.training.engine import train_detector
 
 def main():
     p = argparse.ArgumentParser(
-        description="Corrective synthetic training after classification-collapse diagnosis."
+        description=(
+            "Corrective synthetic training after classification-collapse diagnosis. "
+            "By default, resumes automatically from checkpoint_dir/last.pt when it exists."
+        )
     )
     p.add_argument("--config", default="config/train_synthetic_v2.json")
+    p.add_argument(
+        "--no-auto-resume",
+        action="store_true",
+        help="Disable automatic resume from checkpoint_dir/last.pt.",
+    )
     args = p.parse_args()
 
     cfg = load_json(args.config)
@@ -41,14 +49,31 @@ def main():
         print(json.dumps({"train": train_audit, "val": val_audit}, indent=2))
         raise SystemExit("REFUSED: synthetic labels are invalid/incomplete.")
 
-    ckpt = Path(cfg["pretrained_checkpoint"])
-    if not ckpt.exists():
-        raise SystemExit(f"REFUSED: baseline synthetic checkpoint missing: {ckpt}")
+    checkpoint_dir = Path(cfg["checkpoint_dir"])
+    auto_resume = checkpoint_dir / "last.pt"
+    if not args.no_auto_resume and not (cfg.get("resume") or "") and auto_resume.exists():
+        cfg["resume"] = str(auto_resume)
+        # Resume restores the entire model/optimizer/scheduler state. The
+        # classification reset must only happen on the first v2 start.
+        cfg["reset_classification_head"] = False
+        print(f"AUTO-RESUME: {auto_resume}")
+
+    if cfg.get("resume"):
+        resume = Path(cfg["resume"])
+        if not resume.exists():
+            raise SystemExit(f"REFUSED: resume checkpoint missing: {resume}")
+        init_checkpoint = None
+    else:
+        ckpt = Path(cfg["pretrained_checkpoint"])
+        if not ckpt.exists():
+            raise SystemExit(f"REFUSED: baseline synthetic checkpoint missing: {ckpt}")
+        init_checkpoint = str(ckpt)
+        print(f"START V2 FROM BASELINE: {ckpt}")
 
     result = train_detector(
         cfg,
         model_cfg,
-        init_checkpoint=str(ckpt),
+        init_checkpoint=init_checkpoint,
     )
     print(json.dumps({k: v for k, v in result.items() if k != "history"}, indent=2))
 
