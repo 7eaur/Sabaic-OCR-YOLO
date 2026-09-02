@@ -5,6 +5,7 @@ from typing import List, Sequence
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from .box_ops import bbox_ciou, wh_iou
 from .yolo import reshape_prediction
@@ -26,6 +27,12 @@ class YoloLoss(nn.Module):
     Targets are a list of tensors, one per image:
       [N, 5] = class_id, cx, cy, w, h
     with normalized coordinates in [0, 1].
+
+    Important: each detected glyph belongs to exactly one of the 30 classes.
+    Therefore classification uses categorical cross entropy on positive matches,
+    not independent one-vs-all BCE. The earlier BCE formulation averaged one
+    positive class together with 29 negatives and allowed frequent classes to
+    dominate while the localization branch still learned well.
     """
 
     def __init__(
@@ -37,6 +44,8 @@ class YoloLoss(nn.Module):
         obj_weight: float = 1.0,
         cls_weight: float = 1.0,
         noobj_weight: float = 0.25,
+        cls_label_smoothing: float = 0.02,
+        class_weights: Sequence[float] | torch.Tensor | None = None,
     ):
         super().__init__()
         anchors_t = torch.tensor(anchors, dtype=torch.float32)
@@ -49,7 +58,24 @@ class YoloLoss(nn.Module):
         self.obj_weight = float(obj_weight)
         self.cls_weight = float(cls_weight)
         self.noobj_weight = float(noobj_weight)
-        self.bce = nn.BCEWithLogitsLoss(reduction="none")
+        self.cls_label_smoothing = float(cls_label_smoothing)
+        if not 0.0 <= self.cls_label_smoothing < 1.0:
+            raise ValueError("cls_label_smoothing must be in [0,1).")
+
+        if class_weights is None:
+            weights_t = torch.empty(0, dtype=torch.float32)
+        else:
+            weights_t = torch.as_tensor(class_weights, dtype=torch.float32)
+            if weights_t.numel() != self.num_classes:
+                raise ValueError(
+                    f"class_weights must contain {self.num_classes} values; "
+                    f"got {weights_t.numel()}"
+                )
+            if not torch.isfinite(weights_t).all() or (weights_t <= 0).any():
+                raise ValueError("class_weights must be finite and > 0.")
+        self.register_buffer("class_weights", weights_t)
+
+        self.obj_bce = nn.BCEWithLogitsLoss(reduction="none")
 
     def _decode_positive_boxes(
         self,
@@ -60,7 +86,6 @@ class YoloLoss(nn.Module):
         w: int,
         anchor_wh: torch.Tensor,
     ) -> torch.Tensor:
-        # raw: [N, 4]
         px = (raw[:, 0].sigmoid() + grid_x.float()) / float(w)
         py = (raw[:, 1].sigmoid() + grid_y.float()) / float(h)
         pw = torch.exp(raw[:, 2].clamp(max=8.0)) * anchor_wh[:, 0] / float(self.image_size)
@@ -81,18 +106,9 @@ class YoloLoss(nn.Module):
         total_cls = torch.zeros((), device=device)
         positive_count = 0
 
-        # Flatten all anchors so each GT can choose the best anchor globally.
         flat_anchors = self.anchors.reshape(-1, 2).to(device)
-
         reshaped = [reshape_prediction(p, self.num_classes) for p in predictions]
-
-        # Objectness targets are created for every scale.
-        obj_targets = [
-            torch.zeros_like(p[..., 4], device=device)
-            for p in reshaped
-        ]
-
-        # Accumulate positive assignments: each entry maps scale -> list of tuples.
+        obj_targets = [torch.zeros_like(p[..., 4], device=device) for p in reshaped]
         assignments = {0: [], 1: [], 2: []}
 
         for b, t in enumerate(targets):
@@ -106,9 +122,6 @@ class YoloLoss(nn.Module):
             match = wh_iou(gt_wh_px, flat_anchors)
             candidate_anchors = match.argsort(dim=1, descending=True)
 
-            # Dense text can put two character centers in the same grid cell.
-            # Assign each GT to the best still-free anchor/cell rather than
-            # forcing contradictory box/class targets onto one prediction.
             occupied = {
                 scale_idx: {
                     (item[0], item[1], item[2], item[3])
@@ -138,9 +151,6 @@ class YoloLoss(nn.Module):
                         chosen = (scale_idx, anchor_idx, gj, gi, key)
                         break
 
-                # There are nine anchor slots across the three scales for a
-                # given location, so exhaustion is extremely unlikely. If it
-                # does happen, skipping is safer than creating conflicting GTs.
                 if chosen is None:
                     continue
 
@@ -151,26 +161,18 @@ class YoloLoss(nn.Module):
                 )
                 obj_targets[scale_idx][b, anchor_idx, gj, gi] = 1.0
 
-        # Objectness loss on all cells, weighted to avoid negatives dominating.
         for scale_idx, pred in enumerate(reshaped):
             obj_logits = pred[..., 4]
             target_obj = obj_targets[scale_idx]
-            obj_raw = self.bce(obj_logits, target_obj)
+            obj_raw = self.obj_bce(obj_logits, target_obj)
 
             pos_mask = target_obj > 0.5
             neg_mask = ~pos_mask
-            if pos_mask.any():
-                pos_loss = obj_raw[pos_mask].mean()
-            else:
-                pos_loss = torch.zeros((), device=device)
-            if neg_mask.any():
-                neg_loss = obj_raw[neg_mask].mean()
-            else:
-                neg_loss = torch.zeros((), device=device)
-
+            pos_loss = obj_raw[pos_mask].mean() if pos_mask.any() else torch.zeros((), device=device)
+            neg_loss = obj_raw[neg_mask].mean() if neg_mask.any() else torch.zeros((), device=device)
             total_obj = total_obj + pos_loss + self.noobj_weight * neg_loss
 
-        # Box and class loss only at positive assignments.
+        ce_weight = self.class_weights if self.class_weights.numel() else None
         for scale_idx, items in assignments.items():
             if not items:
                 continue
@@ -193,15 +195,16 @@ class YoloLoss(nn.Module):
             total_box = total_box + (1.0 - ciou).mean()
 
             if self.num_classes > 1:
-                cls_target = torch.zeros(
-                    (len(items), self.num_classes), dtype=raw_pos.dtype, device=device
+                total_cls = total_cls + F.cross_entropy(
+                    raw_pos[:, 5:],
+                    cls_ids,
+                    weight=ce_weight,
+                    label_smoothing=self.cls_label_smoothing,
+                    reduction="mean",
                 )
-                cls_target.scatter_(1, cls_ids[:, None], 1.0)
-                total_cls = total_cls + self.bce(raw_pos[:, 5:], cls_target).mean()
 
             positive_count += len(items)
 
-        # Average across scales for stable hyperparameters.
         total_obj = total_obj / 3.0
         scales_with_pos = sum(1 for v in assignments.values() if v)
         if scales_with_pos:
