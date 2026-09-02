@@ -1,44 +1,60 @@
-# Detector Training Phase — Status
+# Detector Training Phase — Historical Preflight Status
 
-The synthetic-data stage has passed its gate and the project has moved into the detector-training phase.
+> هذه الوثيقة توثّق **مرحلة ما قبل التدريب الكامل** تاريخيًا. حالة المشروع الحالية والنتائج الفعلية بعد v1 وv2 موثقة في:
+>
+> **[`docs/07_synthetic_v2_results_ar.md`](07_synthetic_v2_results_ar.md)**
 
-## Full-loop preflight executed
+## ما الذي كان يتم التحقق منه هنا؟
 
-Before spending GPU hours, the complete training entry point was exercised on a deliberately small smoke dataset and reduced model/input size. This verified DataLoader -> custom YOLO -> custom loss -> optimizer -> validation -> checkpoint writing -> resume.
+قبل صرف وقت GPU على التدريب الكامل، تم تشغيل المسار الكامل على بيانات smoke صغيرة للتأكد من أن:
 
-First smoke epoch:
+```text
+DataLoader -> custom YOLO -> custom loss -> optimizer -> validation -> checkpoint -> resume
+```
+
+يعمل بدون أخطاء.
+
+أول smoke epoch:
 
 ```text
 epoch 1/1 train=9.9365 val=9.4785
 ```
 
-The run wrote `best.pt`, `last.pt` and an epoch checkpoint. A second invocation then loaded `last.pt` and resumed at the next epoch rather than restarting:
+ثم تم التحقق من أن `last.pt` يمكن تحميله والاستكمال بدل إعادة البداية:
 
 ```text
 epoch 2/2 train=9.5263 val=10.5408
 ```
 
-This is a **pipeline/resume test only**. These loss values are not project accuracy and must not be presented as final results.
+هذه الأرقام **اختبار pipeline/resume فقط** وليست دقة للمشروع.
 
-## Repository CI
+## CI والاختبارات
 
-GitHub Actions now compiles `sabaic_ocr` and `scripts` and runs the unit test suite on the exact committed repository. The first CI run completed successfully after the stage-review changes.
+تم تجهيز GitHub Actions لفحص compilation وتشغيل اختبارات المشروع، كما تم تنفيذ اختبارات Unit/Integration قبل التدريب الطويل.
 
-## Full training target
+## الهدف الذي كان مخططًا في هذه المرحلة
 
-The actual synthetic pretraining configuration is:
+كان الهدف الأصلي للتدريب الاصطناعي الأول:
 
-- 5,000 reviewed Train images.
-- 500 reviewed Validation images.
-- 640 x 640 model input.
+- 5,000 Train images.
+- 500 Validation images.
+- 640×640 input.
 - 30 classes.
-- 100 configured epochs.
+- 100 epochs.
 - batch size 16.
-- AMP on CUDA.
-- checkpoints persisted as `checkpoints/synthetic/best.pt` and `last.pt`.
+- AMP على CUDA.
+- حفظ `best.pt` و`last.pt` في Google Drive.
 
-The Colab notebook mounts Google Drive for persistent checkpoints and asserts that a GPU is available before the full training cell starts.
+## ما حدث بعد هذه الوثيقة؟
 
-## Not yet claimed
+تم لاحقًا تنفيذ التدريب الكامل فعلًا على GPU:
 
-A full GPU run has **not** been executed in the current CPU-only execution environment. Therefore there is no legitimate final synthetic `best.pt`, mAP, character accuracy, CER, word accuracy or WER to report yet. Those values must come from the actual GPU training/evaluation run.
+1. اكتمل Synthetic v1 لمدة 100/100 Epoch.
+2. تقييم v1 كشف انهيار classification رغم أن localization كان أفضل.
+3. أضيف تشخيص يفصل localization عن classification.
+4. تم بناء Synthetic v2 مع Cross Entropy وclass balancing وإعادة تهيئة classification logits فقط.
+5. اكتمل v2 لمدة 30/30 Epoch.
+6. حقق Synthetic Test تقريبًا `mAP50=0.9523` و`mAP50-95=0.8634`.
+7. تم تنفيذ Threshold Sweep وانخفض CER المقاس إلى `0.0551` عند confidence `0.80` على Synthetic Test.
+
+لذلك أي عبارة قديمة من نوع "لم يتم التدريب الكامل بعد" تعتبر **متجاوزة زمنيًا** ولا تمثل الحالة الحالية. المرجع الحالي هو الوثيقة رقم 07 وREADME.
