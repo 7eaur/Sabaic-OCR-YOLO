@@ -8,7 +8,7 @@ from PIL import Image
 from sabaic_ocr.data.dataset import YoloCharacterDataset
 from sabaic_ocr.metrics.ocr import evaluate_pair
 from sabaic_ocr.model.box_ops import xywh_to_xyxy, xyxy_to_xywh
-from sabaic_ocr.model.decode import postprocess_batch
+from sabaic_ocr.model.decode import class_agnostic_nms, postprocess_batch
 from sabaic_ocr.model.loss import YoloLoss
 from sabaic_ocr.model.yolo import SabaicYOLO
 from sabaic_ocr.ocr.postprocess import OCRDetection, detections_to_text
@@ -38,6 +38,8 @@ class CoreTests(unittest.TestCase):
         targets = [torch.tensor([[3, 0.5, 0.5, 0.08, 0.16]], dtype=torch.float32)]
         loss = criterion(p, targets)
         self.assertTrue(torch.isfinite(loss.total))
+        self.assertTrue(torch.isfinite(loss.cls))
+        self.assertGreaterEqual(float(loss.cls), 0.0)
         self.assertEqual(loss.positives, 1)
 
         decoded = postprocess_batch(
@@ -82,7 +84,6 @@ if __name__ == "__main__":
 
 
 def test_dense_same_cell_uses_distinct_anchor_slots():
-    """Two nearby GTs must not create contradictory targets on one raw prediction."""
     model = SabaicYOLO(num_classes=30, width_mult=0.25, depth_mult=0.25)
     x = torch.randn(1, 3, 128, 128)
     p = model(x)
@@ -99,6 +100,17 @@ def test_dense_same_cell_uses_distinct_anchor_slots():
     loss = criterion(p, targets)
     assert torch.isfinite(loss.total)
     assert loss.positives == 2
+
+
+def test_class_agnostic_nms_removes_same_glyph_competing_classes():
+    detections = torch.tensor([
+        [0.10, 0.10, 0.30, 0.30, 0.90, 5.0],
+        [0.11, 0.10, 0.31, 0.30, 0.80, 29.0],
+        [0.60, 0.60, 0.75, 0.75, 0.70, 3.0],
+    ])
+    out = class_agnostic_nms(detections, iou_threshold=0.45)
+    assert out.shape[0] == 2
+    assert int(out[0, 5].item()) == 5
 
 
 def test_word_metric_does_not_treat_linebreak_as_word_boundary():
