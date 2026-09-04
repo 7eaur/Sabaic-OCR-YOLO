@@ -39,7 +39,7 @@ Sabaic-OCR-YOLO/
 │   ├── model/            # custom YOLO architecture/loss/decode/NMS
 │   ├── ocr/              # reading order + Unicode reconstruction
 │   └── metrics/          # detection/OCR metrics
-├── scripts/              # train, diagnose, evaluate, threshold sweep, finetune
+├── scripts/              # train, diagnose, evaluate, threshold sweep, remap, finetune
 ├── notebooks/            # Google Colab entry points
 ├── tests/                # unit/integration tests
 ├── checkpoints/          # generated locally / Drive
@@ -56,30 +56,21 @@ Sabaic-OCR-YOLO/
 3. تدريب YOLO من الصفر على Synthetic Data وحفظ `best.pt` و`last.pt`.
 4. تشخيص نتيجة v1 وإصلاح مشكلة تصنيف الحروف في Synthetic v2.
 5. ضبط confidence التشغيلي للـOCR على Synthetic Test.
-6. جمع ووسم **200+ صورة حقيقية للتدريب** + validation/test حقيقية مستقلة.
-7. Fine-tuning من synthetic v2 checkpoint على Real Train فقط.
-8. OCR post-processing: ترتيب الأسطر والحروف وتحويل Class IDs إلى Unicode.
-9. Evaluation: Precision, Recall, mAP, Character Accuracy/CER, Word Accuracy/WER.
-10. Inference pipeline ثم APK.
-11. Report + PPT + final package.
+6. تنفيذ Real Pilot صغير بدون Fine-tuning لقياس الـDomain Gap.
+7. جمع ووسم **200+ صورة حقيقية للتدريب** + validation/test حقيقية مستقلة.
+8. Fine-tuning من synthetic v2 checkpoint على Real Train فقط.
+9. OCR post-processing: ترتيب الأسطر والحروف وتحويل Class IDs إلى Unicode.
+10. Evaluation: Precision, Recall, mAP, Character Accuracy/CER, Word Accuracy/WER.
+11. Inference pipeline ثم APK.
+12. Report + PPT + final package.
 
-## حالة التنفيذ الحالية
+# حالة التنفيذ الحالية
 
-مرحلة **Synthetic pretraining v2** اكتملت وتم تقييمها فعليًا على Synthetic Test مستقل من 100 صورة.
-
-### البيانات الاصطناعية
-
-- Train: **5,000 صورة**.
-- Validation: **500 صورة**.
-- Test: **100 صورة / 1,289 حرفًا مرجعيًا**.
-- جميع الـ30 class ممثلة، وتم اجتياز بوابة مراجعة الصور/labels/transcripts وعدم تسرب exact duplicates بين الـsplits.
-- anchors محسوبة من البيانات، Mean Best IoU حوالي **0.87** وAnchor Recall@0.50 حوالي **1.0**.
-
-### Synthetic v1
+## 1) Synthetic v1
 
 تم تدريب baseline أول لمدة 100 Epoch. التقييم كشف أن localization كان أفضل بكثير من classification؛ Character match accuracy كانت حوالي **20.56%** وCER حوالي **148.18%**، لذلك لم ننتقل إلى Fine-tuning الحقيقي مباشرة.
 
-### Synthetic v2
+## 2) Synthetic v2
 
 بناءً على التشخيص تم:
 
@@ -91,7 +82,7 @@ Sabaic-OCR-YOLO/
 - فصل confidence الخاص بحساب mAP عن confidence التشغيلي للـOCR.
 - إضافة تدريب Resume-Safe يحفظ `last.pt` بعد كل Epoch على Google Drive.
 
-اكتمل v2 لمدة **30/30 Epoch**. على Synthetic Test:
+اكتمل v2 لمدة **30/30 Epoch**. على Synthetic Test من 100 صورة / 1,289 حرفًا:
 
 | Metric | النتيجة |
 |---|---:|
@@ -110,27 +101,78 @@ Sabaic-OCR-YOLO/
 | Deletions | **8** |
 | Substitutions | **43** |
 
-هذه **نتائج Synthetic Test فقط وليست الدقة النهائية على الصور الحقيقية**. سيتم إعادة اختيار threshold على Real Validation بعد Fine-tuning، ثم إجراء التقييم النهائي على Real Test مستقل.
+هذه **نتائج Synthetic Test فقط وليست الدقة النهائية على الصور الحقيقية**.
 
-## التوثيق العربي الكامل للمرحلة الحالية
+## 3) أول Real Pilot
 
-لشرح ما تم أمام الدكتور، بما في ذلك v1، سبب فشله، طريقة التشخيص، لماذا اخترنا كل تعديل في v2، وجداول النتائج والـThreshold Sweep:
+تم بعد ذلك اختبار نفس checkpoint `synthetic_v2/best.pt` على **5 صور حقيقية تجريبية مصورة** لم تدخل في التدريب، وبها **17 Bounding Box** عبر 15 Class.
 
-**[`docs/07_synthetic_v2_results_ar.md`](docs/07_synthetic_v2_results_ar.md)**
+عند `confidence=0.50`:
 
-وتوجد وثائق المراحل السابقة في `docs/01` إلى `docs/06`.
+| Metric | Real Pilot |
+|---|---:|
+| Predictions | 45 |
+| Ground-truth boxes | 17 |
+| Localization Precision | **15.56%** |
+| Localization Recall | **41.18%** |
+| Classification Accuracy on localized matches | **57.14%** |
+| End-to-End Same-Class Recall | **23.53%** |
+| Mean IoU of localized matches | **0.6293** |
 
-## المرحلة التالية
+هذا أكد وجود **Domain Gap** واضحة بين Synthetic والـReal.
 
-الانتقال إلى **Real Dataset**:
+### تشخيص Class 29
 
-- تجهيز **200+ صورة حقيقية labeled للتدريب** على الأقل.
-- تجهيز Real Validation وReal Test منفصلين.
-- Bounding Box وClass ID صحيح لكل حرف ظاهر.
-- مراجعة جودة الوسوم.
-- Fine-tuning من `checkpoints/synthetic_v2/best.pt`.
-- ضبط confidence/NMS باستخدام Real Validation فقط.
-- تقييم نهائي على Real Test باستخدام mAP/CER/WER.
+في الـPilot لم يوجد Class 29 داخل Ground Truth، لكن النموذج تنبأ به بكثرة على خطوط/حواف شبيهة بالرمز:
+
+- عند conf=0.25: `21/64 = 32.81%` من predictions كانت Class 29.
+- عند conf=0.50: `11/45 = 24.44%`.
+- عند conf=0.80: `4/24 = 16.67%`.
+
+وعند تجاهل Class 29 تشخيصيًا فقط عند conf=0.50:
+
+```text
+Predictions:             45 -> 34
+Localization matches:     7 -> 7
+Localization Precision: 15.56% -> 20.59%
+Localization Recall:    41.18% -> 41.18%
+```
+
+إذن Class 29 مسؤول عن جزء واضح من الـFalse Positives لكنه ليس المشكلة الوحيدة. لا يتم حذف Class 29 من المشروع؛ العلاج الصحيح هو Real Fine-tuning وبيانات أكثر تنوعًا.
+
+## 4) مشكلة Roboflow Class IDs وحلها
+
+أول تصدير تجريبي احتوى 15 Class فقط، فقام Roboflow بإعادة ترقيمها داخليًا من 0 إلى 14 رغم أن أسماء الـClasses كانت أرقام المشروع مثل `00`, `01`, `03`, `05`, ...
+
+تمت إضافة:
+
+```text
+scripts/remap_roboflow_labels.py
+```
+
+لاستعادة Project IDs الثابتة 0..29 تلقائيًا اعتمادًا على اسم الـClass، بدون تغيير الصور أو إحداثيات الـBounding Boxes.
+
+# التوثيق العربي
+
+- **[`docs/07_synthetic_v2_results_ar.md`](docs/07_synthetic_v2_results_ar.md)** — توثيق Synthetic v1/v2، التشخيص، التعديلات والنتائج.
+- **[`docs/08_real_pilot_results_ar.md`](docs/08_real_pilot_results_ar.md)** — توثيق Real Pilot الأول، Domain Gap، Class 29 والنتائج بالأرقام.
+- **[`docs/09_real_data_labeler_handoff_ar.md`](docs/09_real_data_labeler_handoff_ar.md)** — تعليمات مفصلة جاهزة للشخص الذي يجمع الصور ويعمل Annotation.
+- **[`docs/02_labeling_protocol.md`](docs/02_labeling_protocol.md)** — البروتوكول الرسمي المختصر للـReal Labeling.
+
+# المرحلة التالية
+
+الآن لا يتم تدريب النموذج على صور الـPilot الخمس. تُحفظ كتجربة تشخيصية قبل الـFine-tuning.
+
+العمل التالي هو:
+
+- جمع ما يقارب 250–280 صورة واقعية حتى يبقى **Real Train 200+** بعد المراجعة والتقسيم.
+- إعطاء الأولوية للصور التي تمثل المجال النهائي للتطبيق، خصوصًا النقوش/المسند الواقعي إذا كان هذا هو مجال التطبيق النهائي.
+- عمل Bounding Box مستقل لكل رمز واضح.
+- استخدام أسماء Classes في Roboflow من `00` إلى `29` حسب `config/classes.json`.
+- إرسال أول 20 صورة موسومة للمراجعة قبل إكمال بقية الـDataset.
+- تسجيل مصدر كل صورة وتجميع الصور العائدة لنفس النقش لمنع Data Leakage.
+- بعد المراجعة: تقسيم Real Train/Validation/Test، ثم Fine-tuning من `checkpoints/synthetic_v2/best.pt`.
+- اختيار confidence/NMS باستخدام Real Validation فقط، ثم التقييم النهائي على Real Test مستقل.
 
 ## مهم
 
